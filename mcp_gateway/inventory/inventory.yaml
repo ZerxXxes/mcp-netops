@@ -1,0 +1,7 @@
+devices:
+  - hostname: r1
+    host: 192.0.2.10
+    platform: ios
+    username: lab
+    password: lab123
+    tags: [lab]
