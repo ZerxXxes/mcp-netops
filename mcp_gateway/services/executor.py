@@ -85,9 +85,8 @@ async def run_command(device: str, command: str, user: User) -> RunCommandRespon
     # 3. Execute in session ----------------------------------------------------
     try:
         async with session.get(dev) as conn:
-            # Netmiko is blocking; run it in FastAPI's threadpool wrapper.
             raw_output: str = await run_in_threadpool(
-                functools.partial(conn.send_command, command, strip_prompt=False, strip_command=False)
+                    lambda: conn.send_command(command)
             )
     except Exception as exc:  # pylint: disable=broad-except
         logger.exception("Command failed: device=%s cmd=%s", device, command)

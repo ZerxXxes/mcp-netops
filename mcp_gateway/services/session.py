@@ -1,105 +1,119 @@
-"""Connection‑pool and session manager for south‑bound device access.
+"""Connection‑pool and session manager using **Scrapli**.
 
-In this PoC we use **Netmiko** synchronously, but we still expose an *async*
-interface so that upstream callers can `await session.get(...)` without blocking
-the event loop.  We rely on FastAPI's built‑in thread pool via
-``fastapi.concurrency.run_in_threadpool`` when we need to open a new SSH
-connection.
-
-Later you can swap this out for AsyncSSH or scrap the pool entirely and use
-gNMI/RESTCONF – the caller contract stays the same.
+Scrapli gracefully falls back to keyboard‑interactive and handles most Cisco
+variants without extra tweaks, so we switch from Netmiko to Scrapli to support
+lab devices that disable the plain ``password`` auth method.
 """
 
 from __future__ import annotations
 
 import contextlib
 import threading
-from typing import Dict, Iterator
+from typing import Dict
 
 from fastapi.concurrency import run_in_threadpool
 from loguru import logger
-from netmiko import ConnectHandler, NetmikoTimeoutException, NetmikoAuthenticationException
+from scrapli.driver.core import IOSXEDriver, IOSXRDriver, NXOSDriver
+from scrapli.exceptions import ScrapliAuthenticationFailed, ScrapliTimeout
 
 from mcp_gateway.models.inventory import Device
 
 # ---------------------------------------------------------------------------
-# Private state
+# Driver map
+# ---------------------------------------------------------------------------
+_DRIVER_MAP = {
+    "ios": IOSXEDriver,
+    "iosxe": IOSXEDriver,
+    "nxos": NXOSDriver,
+    "iosxr": IOSXRDriver,
+}
+
+# ---------------------------------------------------------------------------
+# Connection pool
 # ---------------------------------------------------------------------------
 
 _LOCK = threading.RLock()
-_POOL: Dict[str, ConnectHandler] = {}
+_POOL: Dict[str, "ScrapliConn"] = {}
+
+
+class ScrapliConn:  # thin wrapper for typing clarity
+    def __init__(self, driver):
+        self._driver = driver
+
+    def is_alive(self):
+        return self._driver.isalive()
+
+    def send_command(self, command: str) -> str:
+        return self._driver.send_command(command).result
+
+    def close(self):
+        self._driver.close()
 
 
 # ---------------------------------------------------------------------------
-# Context manager returned to callers
+# Async context manager
 # ---------------------------------------------------------------------------
 
 class _ConnectionContext(contextlib.AbstractAsyncContextManager):
-    """Async context that yields a **connected** Netmiko session.
-
-    Ensures that callers *await* the context but still reuse a blocking
-    ``ConnectHandler`` under the hood.
-    """
-
     def __init__(self, dev_key: str, device: Device):
-        self._dev_key = dev_key
-        self._device = device
-        self._conn: ConnectHandler | None = None
+        self._key = dev_key
+        self._dev = device
+        self._conn: ScrapliConn | None = None
 
-    async def __aenter__(self) -> ConnectHandler:  # type: ignore[override]
-        # Lazily open the connection in a thread so we don't block the event loop.
+    async def __aenter__(self):  # type: ignore[override]
         global _POOL  # noqa: PLW0603
         with _LOCK:
-            self._conn = _POOL.get(self._dev_key)
+            self._conn = _POOL.get(self._key)
 
         if self._conn is None or not self._conn.is_alive():
-            logger.debug("Opening new SSH session → %s (%s)", self._device.hostname, self._device.platform)
-            self._conn = await run_in_threadpool(self._open_connection)
+            logger.debug("Opening Scrapli SSH → %s", self._dev.hostname)
+            self._conn = await run_in_threadpool(self._open)
             with _LOCK:
-                _POOL[self._dev_key] = self._conn
-        else:
-            logger.debug("Reusing cached SSH session → %s", self._device.hostname)
-
+                _POOL[self._key] = self._conn
         return self._conn
 
     async def __aexit__(self, exc_type, exc, tb):  # type: ignore[override]
-        # Do *not* close; keep alive for pool reuse.  Purge on errors.
-        if exc_type is not None:
-            logger.warning("Session error on %s: %s", self._device.hostname, exc)
-            await run_in_threadpool(self._close_and_purge)
-        return False  # propagate exceptions
+        if exc_type:
+            logger.warning("Closing bad session %s: %s", self._dev.hostname, exc)
+            await run_in_threadpool(self._purge)
+        return False
 
-    # ---------------------------------------------------------------------
-    # Low‑level helpers (run in threadpool)
-    # ---------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Blocking helpers (thread‑pool)
+    # ------------------------------------------------------------------
 
-    def _open_connection(self) -> ConnectHandler:
+    def _open(self) -> ScrapliConn:
+        drv_cls = _DRIVER_MAP.get(self._dev.platform.lower())
+        if not drv_cls:
+            raise RuntimeError(f"Unsupported platform for Scrapli: {self._dev.platform}")
         try:
-            return ConnectHandler(
-                device_type=self._device.netmiko_driver,
-                host=self._device.host,
-                username=self._device.username,
-                password=self._device.password,
-                fast_cli=True,
+            drv = drv_cls(
+                host=self._dev.host,
+                auth_username=self._dev.username,
+                auth_password=self._dev.password,
+                auth_strict_key=False,
+                timeout_socket=15,
+                timeout_transport=15,
+                timeout_ops=30,
             )
-        except (NetmikoTimeoutException, NetmikoAuthenticationException) as exc:
-            raise RuntimeError(f"SSH failure on {self._device.host}: {exc}") from exc
+            drv.open()
+            return ScrapliConn(drv)
+        except (ScrapliAuthenticationFailed, ScrapliTimeout) as exc:
+            raise RuntimeError(f"SSH failure on {self._dev.host}: {exc}") from exc
 
-    def _close_and_purge(self) -> None:
+    def _purge(self):
         global _POOL  # noqa: PLW0603
-        if self._conn is not None:
+        if self._conn:
             with contextlib.suppress(Exception):
-                self._conn.disconnect()
+                self._conn.close()
         with _LOCK:
-            _POOL.pop(self._dev_key, None)
+            _POOL.pop(self._key, None)
 
 
 # ---------------------------------------------------------------------------
-# Public helper
+# Public factory
 # ---------------------------------------------------------------------------
 
-
-def get(device: Device) -> _ConnectionContext:  # noqa: D401
-    """Return an *async* context manager that yields an active Netmiko session."""
-    return _ConnectionContext(dev_key=device.hostname, device=device)
+def get(device: Device):  # noqa: D401
+    return _ConnectionContext(device.hostname, device)
 
