@@ -1,8 +1,7 @@
 """Very lightweight audit trail.
 
-For the PoC we simply append JSON lines to *audit.log* and also emit a
-structured message via Loguru so that stdout/stderr streams are still useful in
-Docker/k8s.  A production build would push these events to Loki or a SIEM.
+Appends JSON lines to *audit.log* and emits a structured Loguru message. Uses
+plain ``open(path, "a")`` to avoid the Path.write_text *append* gotcha.
 """
 from __future__ import annotations
 
@@ -13,13 +12,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-# Path is relative to project root
 _AUDIT_PATH = Path("audit.log").resolve()
-
-
-# ---------------------------------------------------------------------------
-# Public helper
-# ---------------------------------------------------------------------------
 
 
 def record(
@@ -41,13 +34,14 @@ def record(
         "has_json": parsed is not None,
     }
 
-    # Emit Loguru record (already timestamped)
+    # Log for console/SIEM collectors
     logger.bind(audit=True).info("{event}", event=event)
 
-    # Append JSON line to file (quick & dirty persistence)
+    # Write JSONL
     try:
-        _AUDIT_PATH.touch(exist_ok=True)
-        _AUDIT_PATH.write_text(json.dumps({**event, "stdout": raw_output, "json": parsed}) + "\n", append=True)  # type: ignore[arg-type]
+        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({**event, "stdout": raw_output, "json": parsed}) + "\n")
     except Exception:  # noqa: BLE001
         logger.exception("Failed to write audit log to %s", _AUDIT_PATH)
 

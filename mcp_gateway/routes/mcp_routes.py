@@ -77,7 +77,7 @@ async def show_inventory(user: User = Depends(get_current_user)) -> InventoryRes
     The inventory service performs the authorisation check so we do not leak
     devices that the caller is not entitled to view.
     """
-    devices = await inventory_service.list_devices(user=user)
+    devices = inventory_service.list_devices(user=user)
     return InventoryResponse(devices=devices)
 
 
