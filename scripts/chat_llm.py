@@ -1,8 +1,14 @@
-"""Minimal CLI that lets you chat with GPT‑4o‑mini and *automatically* calls the
-MCP gateway tools (`run_command`, `show_inventory`).
+"""Minimal CLI that lets you chat with GPT-4o-mini (or any compatible endpoint)
+and *automatically* call the MCP gateway tools (`run_command`, `show_inventory`).
+
+Environment variables:
+    OPENAI_API_KEY   – API key for the OpenAI-compatible service (required).
+    BASE_URL         – Optional custom base URL (e.g. https://my-endpoint/v1).
+    MCP_URL          – URL of the MCP gateway (default http://localhost:8000/mcp).
 
 Usage:
     export OPENAI_API_KEY=...
+    # optionally: export BASE_URL=https://azure.openai.azure.com/openai/deployments/mychat/chat
     poetry run python scripts/chat_llm.py
 """
 from __future__ import annotations
@@ -15,7 +21,17 @@ from typing import Any, Dict, List
 import httpx
 from openai import OpenAI
 
+# ---------------------------------------------------------------------------
+# Environment configuration
+# ---------------------------------------------------------------------------
+
+# MCP Gateway base URL (local FastAPI service)
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/mcp")
+
+# Optional: override the base URL for the OpenAI-compatible endpoint so the
+# script can be pointed at alternative providers (e.g. Azure OpenAI, local
+# gateways, etc.).  Leaving it unset keeps the official default.
+BASE_URL = os.getenv("BASE_URL")
 
 # ---------------------------------------------------------------------------
 # Tool schemas (OpenAI function‑calling spec)
@@ -72,7 +88,7 @@ FUNCTION_MAP = {
 # Chat loop
 # ---------------------------------------------------------------------------
 
-openai = OpenAI()
+openai = OpenAI(base_url=BASE_URL)
 messages: List[Dict[str, Any]] = [
     {
         "role": "system",
@@ -81,6 +97,9 @@ messages: List[Dict[str, Any]] = [
         ),
     }
 ]
+
+if BASE_URL:
+    print(f"Using OpenAI-compatible endpoint: {BASE_URL}")
 
 print("Network chat (type 'exit' to quit)\n")
 
@@ -93,7 +112,7 @@ while True:
 
     while True:
         response = openai.chat.completions.create(
-            model="gpt-4o-mini",
+            model="o4-mini",
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
