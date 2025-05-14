@@ -105,45 +105,84 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
 
         # Local helper to cut duplication when instantiating the Scrapli driver.
         def _open_with_kwargs(**kwargs):
-            drv = drv_cls(
+            """Instantiate and open a Scrapli driver with dynamic auth params.
+
+            For devices that do *not* require login credentials (e.g. a Telnet
+            connection to a console port) the inventory entry will leave
+            ``username`` and ``password`` blank.  In that case we instruct
+            Scrapli to *bypass* authentication altogether by setting
+            ``auth_bypass=True`` instead of passing ``auth_username``/``auth_password``.
+            """
+
+            # Base connection settings (common for all devices).
+            base_kwargs = dict(
                 host=self._dev.host,
-                auth_username=self._dev.username,
-                auth_password=self._dev.password,
                 auth_strict_key=False,
                 timeout_socket=15,
                 timeout_transport=15,
                 timeout_ops=30,
+            )
+
+            # ----------------------------------------------------------------
+            # Authentication selection
+            # ----------------------------------------------------------------
+            if self._dev.username is None and self._dev.password is None:
+                # No credentials → skip interactive login.
+                base_kwargs["auth_bypass"] = True
+            else:
+                # Normal username/password authentication.  (We intentionally
+                # pass *even if* either value is an empty string – Scrapli will
+                # raise during open() if the target refuses such credentials.)
+                base_kwargs["auth_username"] = self._dev.username or ""
+                base_kwargs["auth_password"] = self._dev.password or ""
+
+            drv = drv_cls(
+                **base_kwargs,
                 **kwargs,
             )
             drv.open()
             return ScrapliConn(drv)
 
         # ------------------------------------------------------------------
-        # 1. Try the default SSH transport first.
+        # 1. Determine which transport to try first.
         # ------------------------------------------------------------------
-        # Determine the TCP port for the *primary* SSH attempt.  Fall back to
-        # the Scrapli default (22) if the inventory entry did not specify a
-        # custom port.
-        ssh_port = self._dev.port or 22
+        # If *no* credentials are supplied we assume the target is a console
+        # exposed over Telnet and therefore prioritise Telnet straight away.
+        # Otherwise we keep the original behaviour of SSH-first with an
+        # optional Telnet fallback (classic IOS only).
 
-        try:
-            return _open_with_kwargs(port=ssh_port)
-        except (ScrapliAuthenticationFailed, ScrapliTimeout) as exc:
-            # Only attempt Telnet fallback for classic IOS devices.
-            if self._dev.platform.lower() != "ios":
-                raise RuntimeError(f"SSH failure on {self._dev.host}: {exc}") from exc
+        no_auth = self._dev.username is None and self._dev.password is None
 
-            logger.debug("SSH failed for %s – attempting Telnet fallback", self._dev.hostname)
+        # Helper function so we can attempt transports in the chosen order but
+        # still share the common error-handling code.
+        def _try_open(transport: str | None, port: int):
+            kwargs = {"port": port}
+            if transport:
+                kwargs["transport"] = transport
+            return _open_with_kwargs(**kwargs)
 
-            # Determine Telnet port – default 23 unless overridden in inventory.
-            telnet_port = self._dev.port or 23
+        # Build ordered list of (transport, port) attempts.
+        attempts: list[tuple[str | None, int]] = []
+        if no_auth:
+            # Telnet first, maybe still try SSH if Telnet fails.
+            attempts.append(("telnet", self._dev.port or 23))
+            attempts.append((None, self._dev.port or 22))  # SSH default
+        else:
+            # Original flow: SSH then Telnet (IOS only).
+            attempts.append((None, self._dev.port or 22))  # SSH default
+            if self._dev.platform.lower() == "ios":
+                attempts.append(("telnet", self._dev.port or 23))
 
+        last_exc: Exception | None = None
+        for transport, port in attempts:
             try:
-                return _open_with_kwargs(transport="telnet", port=telnet_port)
-            except (ScrapliAuthenticationFailed, ScrapliTimeout) as tel_exc:
-                raise RuntimeError(
-                    f"SSH & Telnet failed on {self._dev.host}: {tel_exc}"
-                ) from tel_exc
+                return _try_open(transport, port)
+            except (ScrapliAuthenticationFailed, ScrapliTimeout) as exc:
+                last_exc = exc
+                # Continue to next attempt in list.
+
+        # If we get here all attempts failed.
+        raise RuntimeError(f"Connection attempts failed on {self._dev.host}: {last_exc}") from last_exc
 
     def _purge(self):
         global _POOL  # noqa: PLW0603

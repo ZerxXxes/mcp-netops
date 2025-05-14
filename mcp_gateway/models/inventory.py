@@ -17,8 +17,16 @@ class Device(BaseModel):
     hostname: str = Field(..., description="Logical name used in MCP calls")
     host: str = Field(..., description="DNS name or management IP")
     platform: str = Field(..., description="ios, iosxe, nxos, etc.")
-    username: str
-    password: str  # noqa: S105 – secrets are kept in‑memory only for session auth
+    #
+    # Username/password are *optional* to support devices that expose a console
+    # over Telnet without any login prompt (common for lab setups where the
+    # terminal server maps TCP → serial).  When both fields are omitted the
+    # connection logic in ``services.session`` automatically sets
+    # ``auth_bypass=True`` for Scrapli so the transport skips the interactive
+    # authentication dialogue.
+    #
+    username: str | None = None
+    password: str | None = None  # noqa: S105 – kept in-memory only for session auth
     tags: list[str] = Field(default_factory=list, description="Arbitrary RBAC tags")
 
     # Optional TCP port override for the management protocol.  If *None* the
