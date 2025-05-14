@@ -147,9 +147,9 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
         # 1. Determine which transport to try first.
         # ------------------------------------------------------------------
         # If *no* credentials are supplied we assume the target is a console
-        # exposed over Telnet and therefore prioritise Telnet straight away.
-        # Otherwise we keep the original behaviour of SSH-first with an
-        # optional Telnet fallback (classic IOS only).
+        # exposed over Telnet and therefore use *Telnet only*.  Otherwise we
+        # keep the original behaviour of SSH-first with an optional Telnet
+        # fallback (classic IOS only).
 
         no_auth = self._dev.username is None and self._dev.password is None
 
@@ -164,9 +164,8 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
         # Build ordered list of (transport, port) attempts.
         attempts: list[tuple[str | None, int]] = []
         if no_auth:
-            # Telnet first, maybe still try SSH if Telnet fails.
+            # Device without credentials → **only Telnet**.
             attempts.append(("telnet", self._dev.port or 23))
-            attempts.append((None, self._dev.port or 22))  # SSH default
         else:
             # Original flow: SSH then Telnet (IOS only).
             attempts.append((None, self._dev.port or 22))  # SSH default
