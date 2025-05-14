@@ -21,6 +21,7 @@ paramiko = "<3.4"
 scrapli = "^2025.1.30"
 openai = "^1.78.0"
 httpx = "^0.28.1"
+gradio = "^4.31"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2"

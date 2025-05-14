@@ -86,7 +86,24 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
         drv_cls = _DRIVER_MAP.get(self._dev.platform.lower())
         if not drv_cls:
             raise RuntimeError(f"Unsupported platform for Scrapli: {self._dev.platform}")
-        try:
+        """Open a Scrapli connection with SSH *or* Telnet (IOS fallback).
+
+        The primary transport for all devices remains SSH.  However, some Cisco
+        IOS lab routers do not run an SSH server and can only be reached via
+        Telnet on TCP/23.  For devices with ``platform == "ios"`` we therefore
+        attempt a best-effort Telnet fallback if the initial SSH connection
+        fails.
+
+        Notes
+        -----
+        1. We *only* fall back to Telnet for classic IOS – all other platforms
+           are expected to support SSH.
+        2. The Telnet flow still re-uses the same Scrapli driver class; we just
+           pass ``transport="telnet"`` so Scrapli instantiates the Telnet
+           transport implementation.
+        """
+
+        def _open_with_kwargs(**kwargs):  # local helper to remove duplication
             drv = drv_cls(
                 host=self._dev.host,
                 auth_username=self._dev.username,
@@ -95,11 +112,29 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
                 timeout_socket=15,
                 timeout_transport=15,
                 timeout_ops=30,
+                **kwargs,
             )
             drv.open()
             return ScrapliConn(drv)
+
+        # ------------------------------------------------------------------
+        # 1. Try the default SSH transport first.
+        # ------------------------------------------------------------------
+        try:
+            return _open_with_kwargs()
         except (ScrapliAuthenticationFailed, ScrapliTimeout) as exc:
-            raise RuntimeError(f"SSH failure on {self._dev.host}: {exc}") from exc
+            # Only attempt Telnet fallback for classic IOS devices.
+            if self._dev.platform.lower() != "ios":
+                raise RuntimeError(f"SSH failure on {self._dev.host}: {exc}") from exc
+
+            logger.debug("SSH failed for %s – attempting Telnet fallback", self._dev.hostname)
+
+            try:
+                return _open_with_kwargs(transport="telnet", port=23)
+            except (ScrapliAuthenticationFailed, ScrapliTimeout) as tel_exc:
+                raise RuntimeError(
+                    f"SSH & Telnet failed on {self._dev.host}: {tel_exc}"
+                ) from tel_exc
 
     def _purge(self):
         global _POOL  # noqa: PLW0603

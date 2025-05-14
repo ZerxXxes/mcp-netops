@@ -145,7 +145,7 @@ _SYSTEM_MSG = {
     "content": (
         "You are a network assistant. Use the available tools to gather data "
         "from network devices to help answer questions or troubleshoot issues "
-        "in the network."
+        "in the network. Wrap the output in a Markdown code-block when applicable."
     ),
 }
 
