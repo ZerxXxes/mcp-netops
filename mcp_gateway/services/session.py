@@ -103,7 +103,8 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
            transport implementation.
         """
 
-        def _open_with_kwargs(**kwargs):  # local helper to remove duplication
+        # Local helper to cut duplication when instantiating the Scrapli driver.
+        def _open_with_kwargs(**kwargs):
             drv = drv_cls(
                 host=self._dev.host,
                 auth_username=self._dev.username,
@@ -120,8 +121,13 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
         # ------------------------------------------------------------------
         # 1. Try the default SSH transport first.
         # ------------------------------------------------------------------
+        # Determine the TCP port for the *primary* SSH attempt.  Fall back to
+        # the Scrapli default (22) if the inventory entry did not specify a
+        # custom port.
+        ssh_port = self._dev.port or 22
+
         try:
-            return _open_with_kwargs()
+            return _open_with_kwargs(port=ssh_port)
         except (ScrapliAuthenticationFailed, ScrapliTimeout) as exc:
             # Only attempt Telnet fallback for classic IOS devices.
             if self._dev.platform.lower() != "ios":
@@ -129,8 +135,11 @@ class _ConnectionContext(contextlib.AbstractAsyncContextManager):
 
             logger.debug("SSH failed for %s – attempting Telnet fallback", self._dev.hostname)
 
+            # Determine Telnet port – default 23 unless overridden in inventory.
+            telnet_port = self._dev.port or 23
+
             try:
-                return _open_with_kwargs(transport="telnet", port=23)
+                return _open_with_kwargs(transport="telnet", port=telnet_port)
             except (ScrapliAuthenticationFailed, ScrapliTimeout) as tel_exc:
                 raise RuntimeError(
                     f"SSH & Telnet failed on {self._dev.host}: {tel_exc}"

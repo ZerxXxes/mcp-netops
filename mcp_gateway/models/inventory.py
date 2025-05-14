@@ -21,6 +21,16 @@ class Device(BaseModel):
     password: str  # noqa: S105 – secrets are kept in‑memory only for session auth
     tags: list[str] = Field(default_factory=list, description="Arbitrary RBAC tags")
 
+    # Optional TCP port override for the management protocol.  If *None* the
+    # connection logic picks sensible defaults based on the transport
+    # (22 for SSH, 23 for Telnet).
+    port: int | None = Field(
+        default=None,
+        ge=1,
+        le=65535,
+        description="Custom TCP port for SSH/Telnet (optional)",
+    )
+
     # ---------------------------------------------------------------------
     # Netmiko driver mapping
     # ---------------------------------------------------------------------
